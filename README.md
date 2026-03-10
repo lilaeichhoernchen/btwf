@@ -34,7 +34,7 @@ BtWiFi uses multiple discovery protocols to scan for nearby wireless and network
 - **mDNS Discovery:** zeroconf library
 - **OUI Lookup:** IEEE MA-L (OUI) database via mac-vendor-lookup
 - **Configuration:** PyYAML
-- **Testing:** pytest with 86%+ coverage
+- **Testing:** pytest with 324 tests, 96% coverage
 - **Linting:** ruff (lint + format)
 - **Type Checking:** mypy
 - **CI/CD:** GitHub Actions (lint, test matrix, Trivy, CodeQL)
@@ -50,7 +50,7 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
 # Run the scanner
 python -m src.main
@@ -112,7 +112,7 @@ btwf/
 │   ├── alert.py              # New device alert system
 │   └── data/
 │       └── .gitkeep
-├── tests/                    # 282 tests, 86%+ coverage
+├── tests/                    # 324 tests, 96% coverage
 │   ├── test_main.py
 │   ├── test_config.py
 │   ├── test_categorizer.py
