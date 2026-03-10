@@ -248,11 +248,7 @@ class TestMigrateMissingColumns:
 
         # Insert a device using old schema
         with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "INSERT INTO devices (mac_address, device_type) VALUES ('AA:BB:CC:DD:EE:FF', 'wifi_ap')"
-                )
-            )
+            conn.execute(text("INSERT INTO devices (mac_address, device_type) VALUES ('AA:BB:CC:DD:EE:FF', 'wifi_ap')"))
 
         # Now run migration
         _migrate_missing_columns(engine)
