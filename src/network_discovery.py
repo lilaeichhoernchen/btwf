@@ -177,7 +177,7 @@ def _resolve_hostname(ip_address: str) -> str | None:
         hostname, _, _ = socket.gethostbyaddr(ip_address)
         if hostname and hostname != ip_address:
             return hostname
-    except (socket.herror, OSError):
+    except OSError:
         pass
 
     return None
