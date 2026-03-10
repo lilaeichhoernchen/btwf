@@ -9,14 +9,16 @@ import re
 import signal
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
+from typing import TypeVar
 
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session as DbSession
 from tabulate import tabulate
 
 from src.alert import AlertManager
-from src.bluetooth_scanner import scan_bluetooth_devices
+from src.bluetooth_scanner import BluetoothDevice, scan_bluetooth_devices
 from src.categorizer import categorize_device, get_category_label
 from src.config import AppConfig, load_config
 from src.database import get_session, init_database
@@ -27,12 +29,12 @@ from src.device_tracker import (
     update_visibility,
 )
 from src.mdns_scanner import MdnsDevice
-from src.models import Device
+from src.models import Device, VisibilityWindow
 from src.network_discovery import NetworkDevice, scan_arp_table
 from src.oui_lookup import is_randomized_mac
 from src.ssdp_scanner import SsdpDevice
 from src.whitelist import WhitelistManager
-from src.wifi_scanner import scan_wifi_networks
+from src.wifi_scanner import WifiNetwork, scan_wifi_networks
 
 # Configure logging
 logging.basicConfig(
@@ -256,114 +258,185 @@ def _run_single_scan(
         whitelist: Whitelist manager.
         alert_mgr: Alert manager.
     """
+    scan_data = _execute_all_scanners(config)
     gap = config.scan.gap_seconds
 
-    # ---- WiFi Scan ----
-    wifi_networks = []
-    if config.scan.wifi_enabled:
-        try:
-            wifi_networks = scan_wifi_networks()
-        except RuntimeError as exc:
-            logger.error("WiFi scan failed: %s", exc)
-
-    # ---- Bluetooth Scan ----
-    bt_devices = []
-    if config.scan.bluetooth_enabled:
-        try:
-            bt_devices = scan_bluetooth_devices()
-        except RuntimeError as exc:
-            logger.error("Bluetooth scan failed: %s", exc)
-
-    # ---- ARP / Network Discovery ----
-    arp_devices = []
-    if config.scan.arp_enabled:
-        try:
-            arp_devices = scan_arp_table()
-        except Exception as exc:
-            logger.error("ARP scan failed: %s", exc)
-
-    # ---- mDNS Discovery ----
-    mdns_devices = []
-    if config.scan.mdns_enabled:
-        try:
-            from src.mdns_scanner import scan_mdns_services
-
-            mdns_devices = scan_mdns_services()
-        except Exception as exc:
-            logger.error("mDNS discovery failed: %s", exc)
-
-    # ---- SSDP Discovery ----
-    ssdp_devices = []
-    if config.scan.ssdp_enabled:
-        try:
-            from src.ssdp_scanner import scan_ssdp_devices
-
-            ssdp_devices = scan_ssdp_devices()
-        except Exception as exc:
-            logger.error("SSDP discovery failed: %s", exc)
-
-    # ---- NetBIOS ----
-    netbios_names: dict[str, str] = {}
-    if config.scan.netbios_enabled and arp_devices:
-        try:
-            from src.netbios_scanner import resolve_netbios_names
-
-            ips = [d.ip_address for d in arp_devices]
-            nb_infos = resolve_netbios_names(ips)
-            for nb in nb_infos:
-                netbios_names[nb.ip_address] = nb.netbios_name
-        except Exception as exc:
-            logger.error("NetBIOS resolution failed: %s", exc)
-
-    # ---- Store results ----
     with get_session(engine) as session:
-        # Track WiFi
-        wifi_results = track_wifi_scan(session, wifi_networks, gap_seconds=gap)
-        logger.info("Tracked %d WiFi networks.", len(wifi_results))
-
-        # Track Bluetooth
-        bt_results = track_bluetooth_scan(session, bt_devices, gap_seconds=gap)
-        logger.info("Tracked %d Bluetooth devices.", len(bt_results))
-
-        # Track ARP devices
-        for arp_dev in arp_devices:
-            _upsert_network_device(session, arp_dev, whitelist, alert_mgr, netbios_names, gap)
-
-        # Track mDNS devices (enrich or create)
-        for mdns_dev in mdns_devices:
-            _upsert_mdns_device(session, mdns_dev, whitelist, alert_mgr, gap)
-
-        # Track SSDP devices (enrich or create)
-        for ssdp_dev in ssdp_devices:
-            _upsert_ssdp_device(session, ssdp_dev, whitelist, alert_mgr, gap)
-
-        # Categorize and tag all devices
+        wifi_results, bt_results = _store_scan_results(session, scan_data, whitelist, alert_mgr, gap)
         _categorize_all_devices(session, whitelist)
-
-        # Alert for new WiFi devices
-        for device, _window in wifi_results:
-            if device.created_at == device.updated_at:
-                alert_mgr.on_new_device(
-                    mac_address=device.mac_address,
-                    device_type=device.device_type,
-                    vendor=device.vendor,
-                    device_name=device.device_name,
-                    is_whitelisted=whitelist.is_known(device.mac_address),
-                )
-
-        # Alert for new BT devices
-        for device, _window in bt_results:
-            if device.created_at == device.updated_at:
-                alert_mgr.on_new_device(
-                    mac_address=device.mac_address,
-                    device_type=device.device_type,
-                    vendor=device.vendor,
-                    device_name=device.device_name,
-                    is_whitelisted=whitelist.is_known(device.mac_address),
-                )
-
+        _alert_new_tracked_devices(wifi_results + bt_results, whitelist, alert_mgr)
         session.flush()
         _display_results(session, whitelist)
+
+
+class _ScanData:
+    """Container for results from all scanner types."""
+
+    __slots__ = (
+        "wifi_networks",
+        "bt_devices",
+        "arp_devices",
+        "mdns_devices",
+        "ssdp_devices",
+        "netbios_names",
+    )
+
+    def __init__(self) -> None:
+        self.wifi_networks: list[WifiNetwork] = []
+        self.bt_devices: list[BluetoothDevice] = []
+        self.arp_devices: list[NetworkDevice] = []
+        self.mdns_devices: list[MdnsDevice] = []
+        self.ssdp_devices: list[SsdpDevice] = []
+        self.netbios_names: dict[str, str] = {}
+
+
+def _execute_all_scanners(config: AppConfig) -> _ScanData:
+    """Run all enabled scanners and return collected data.
+
+    Args:
+        config: Application configuration.
+
+    Returns:
+        _ScanData with results from each scanner.
+    """
+    data = _ScanData()
+
+    if config.scan.wifi_enabled:
+        data.wifi_networks = _run_scanner("WiFi", scan_wifi_networks)
+
+    if config.scan.bluetooth_enabled:
+        data.bt_devices = _run_scanner("Bluetooth", scan_bluetooth_devices)
+
+    if config.scan.arp_enabled:
+        data.arp_devices = _run_scanner("ARP", scan_arp_table)
+
+    if config.scan.mdns_enabled:
+        data.mdns_devices = _run_scanner("mDNS", _import_and_scan_mdns)
+
+    if config.scan.ssdp_enabled:
+        data.ssdp_devices = _run_scanner("SSDP", _import_and_scan_ssdp)
+
+    if config.scan.netbios_enabled and data.arp_devices:
+        data.netbios_names = _resolve_netbios(data.arp_devices)
+
+    return data
+
+
+_T = TypeVar("_T")
+
+
+def _run_scanner(name: str, scanner_fn: Callable[[], list[_T]]) -> list[_T]:
+    """Execute a scanner function with error handling.
+
+    Args:
+        name: Human-readable scanner name for logging.
+        scanner_fn: Callable that returns a list of results.
+
+    Returns:
+        Scanner results, or empty list on failure.
+    """
+    try:
+        return scanner_fn()
+    except Exception as exc:
+        logger.error("%s scan failed: %s", name, exc)
+        return []
+
+
+def _import_and_scan_mdns() -> list[MdnsDevice]:
+    """Import and run the mDNS scanner."""
+    from src.mdns_scanner import scan_mdns_services
+
+    return scan_mdns_services()
+
+
+def _import_and_scan_ssdp() -> list[SsdpDevice]:
+    """Import and run the SSDP scanner."""
+    from src.ssdp_scanner import scan_ssdp_devices
+
+    return scan_ssdp_devices()
+
+
+def _resolve_netbios(arp_devices: list[NetworkDevice]) -> dict[str, str]:
+    """Resolve NetBIOS names for discovered ARP devices.
+
+    Args:
+        arp_devices: List of ARP-discovered devices.
+
+    Returns:
+        Map of IP address to NetBIOS name.
+    """
+    try:
+        from src.netbios_scanner import resolve_netbios_names
+
+        ips = [d.ip_address for d in arp_devices]
+        nb_infos = resolve_netbios_names(ips)
+        return {nb.ip_address: nb.netbios_name for nb in nb_infos}
+    except Exception as exc:
+        logger.error("NetBIOS resolution failed: %s", exc)
+        return {}
+
+
+def _store_scan_results(
+    session: DbSession,
+    data: _ScanData,
+    whitelist: WhitelistManager,
+    alert_mgr: AlertManager,
+    gap: int,
+) -> tuple[
+    list[tuple[Device, VisibilityWindow]],
+    list[tuple[Device, VisibilityWindow]],
+]:
+    """Store all scan results in the database.
+
+    Args:
+        session: Database session.
+        data: Collected scan data.
+        whitelist: Whitelist manager.
+        alert_mgr: Alert manager.
+        gap: Visibility gap threshold in seconds.
+
+    Returns:
+        Tuple of (wifi_results, bt_results) for alerting.
+    """
+    wifi_results = track_wifi_scan(session, data.wifi_networks, gap_seconds=gap)
+    logger.info("Tracked %d WiFi networks.", len(wifi_results))
+
+    bt_results = track_bluetooth_scan(session, data.bt_devices, gap_seconds=gap)
+    logger.info("Tracked %d Bluetooth devices.", len(bt_results))
+
+    for arp_dev in data.arp_devices:
+        _upsert_network_device(session, arp_dev, whitelist, alert_mgr, data.netbios_names, gap)
+
+    for mdns_dev in data.mdns_devices:
+        _upsert_mdns_device(session, mdns_dev, whitelist, alert_mgr, gap)
+
+    for ssdp_dev in data.ssdp_devices:
+        _upsert_ssdp_device(session, ssdp_dev, whitelist, alert_mgr, gap)
+
+    return wifi_results, bt_results
+
+
+def _alert_new_tracked_devices(
+    tracked_results: list[tuple[Device, VisibilityWindow]],
+    whitelist: WhitelistManager,
+    alert_mgr: AlertManager,
+) -> None:
+    """Send alerts for newly discovered tracked devices.
+
+    Args:
+        tracked_results: List of (device, window) tuples from tracking.
+        whitelist: Whitelist manager.
+        alert_mgr: Alert manager.
+    """
+    for device, _window in tracked_results:
+        if device.created_at == device.updated_at:
+            alert_mgr.on_new_device(
+                mac_address=device.mac_address,
+                device_type=device.device_type,
+                vendor=device.vendor,
+                device_name=device.device_name,
+                is_whitelisted=whitelist.is_known(device.mac_address),
+            )
 
 
 def _upsert_network_device(
@@ -566,6 +639,14 @@ def _categorize_all_devices(session: DbSession, whitelist: WhitelistManager) -> 
             device.is_whitelisted = whitelist.is_known(device.mac_address)
 
 
+_DEVICE_TYPE_LABELS: dict[str, str] = {
+    "wifi_ap": "WiFi AP",
+    "wifi_client": "WiFi Client",
+    "bluetooth": "Bluetooth",
+    "network": "Network",
+}
+
+
 def _display_results(session: DbSession, whitelist: WhitelistManager | None = None) -> None:
     """Display all tracked devices in a human-readable table.
 
@@ -591,43 +672,72 @@ def _display_results(session: DbSession, whitelist: WhitelistManager | None = No
         "Details",
     ]
 
-    rows = []
-    for device, window in results:
-        type_label = {
-            "wifi_ap": "WiFi AP",
-            "wifi_client": "WiFi Client",
-            "bluetooth": "Bluetooth",
-            "network": "Network",
-        }.get(device.device_type, device.device_type)
+    rows = [_build_device_row(device, window, whitelist) for device, window in results]
 
-        category = get_category_label(device.category) if device.category else ""
-        name = _best_name(device, whitelist)
-        vendor = _friendly_vendor(device.vendor, device.mac_address)
-        mac = device.mac_address
+    _print_device_table(rows, headers)
 
-        if device.is_whitelisted:
-            name = f"✓ {name}"
 
-        signal_str = _format_signal(window.signal_strength_dbm if window else None)
-        first_seen = _format_time(window.first_seen if window else None)
-        last_seen = _format_time(window.last_seen if window else None)
+def _build_device_row(
+    device: Device,
+    window: VisibilityWindow | None,
+    whitelist: WhitelistManager | None,
+) -> list[str]:
+    """Build a single table row for a device.
 
-        details_parts = []
-        if device.authentication and device.authentication != "Open":
-            details_parts.append(f"Auth: {device.authentication}")
-        if device.encryption and device.encryption != "None":
-            details_parts.append(f"Enc: {device.encryption}")
-        if device.radio_type:
-            details_parts.append(device.radio_type)
-        if device.channel:
-            details_parts.append(f"Ch {device.channel}")
-        if device.extra_info:
-            details_parts.append(device.extra_info)
+    Args:
+        device: Device record.
+        window: Visibility window (may be None).
+        whitelist: Optional whitelist manager.
 
-        details = " | ".join(details_parts) if details_parts else ""
+    Returns:
+        List of column values for the table row.
+    """
+    type_label = _DEVICE_TYPE_LABELS.get(device.device_type, device.device_type)
+    category = get_category_label(device.category) if device.category else ""
+    name = _best_name(device, whitelist)
+    vendor = _friendly_vendor(device.vendor, device.mac_address)
 
-        rows.append([type_label, category, name, vendor, mac, signal_str, first_seen, last_seen, details])
+    if device.is_whitelisted:
+        name = f"✓ {name}"
 
+    signal_str = _format_signal(window.signal_strength_dbm if window else None)
+    first_seen = _format_time(window.first_seen if window else None)
+    last_seen = _format_time(window.last_seen if window else None)
+    details = _format_details(device)
+
+    return [type_label, category, name, vendor, device.mac_address, signal_str, first_seen, last_seen, details]
+
+
+def _format_details(device: Device) -> str:
+    """Format the details column for a device row.
+
+    Args:
+        device: Device record.
+
+    Returns:
+        Pipe-separated detail string.
+    """
+    parts: list[str] = []
+    if device.authentication and device.authentication != "Open":
+        parts.append(f"Auth: {device.authentication}")
+    if device.encryption and device.encryption != "None":
+        parts.append(f"Enc: {device.encryption}")
+    if device.radio_type:
+        parts.append(device.radio_type)
+    if device.channel:
+        parts.append(f"Ch {device.channel}")
+    if device.extra_info:
+        parts.append(device.extra_info)
+    return " | ".join(parts)
+
+
+def _print_device_table(rows: list[list[str]], headers: list[str]) -> None:
+    """Print the device table and summary statistics.
+
+    Args:
+        rows: Table rows.
+        headers: Column headers.
+    """
     print("\n" + "=" * 140)
     print("  DISCOVERED DEVICES")
     print("=" * 140)

@@ -7,6 +7,7 @@ commonly used by printers, IoT devices, Apple devices, etc.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from src.oui_lookup import is_randomized_mac, lookup_vendor
 
@@ -69,104 +70,160 @@ def scan_mdns_services(timeout: float = _BROWSE_TIMEOUT) -> list[MdnsDevice]:
         List of discovered MdnsDevice objects.
     """
     try:
-        from zeroconf import ServiceBrowser, Zeroconf
+        from zeroconf import Zeroconf
     except ImportError:
         logger.warning("zeroconf not installed. Install with: pip install zeroconf")
         return []
 
     logger.info("Starting mDNS service discovery (timeout=%.1fs per type)...", timeout)
-    devices: list[MdnsDevice] = []
     seen_keys: set[str] = set()
 
     zc = Zeroconf()
     try:
         collector = _ServiceCollector()
-        browsers = []
-        for stype in _SERVICE_TYPES:
-            try:
-                browser = ServiceBrowser(zc, stype, collector)  # type: ignore[arg-type]
-                browsers.append(browser)
-            except Exception:
-                logger.debug("Failed to browse service type: %s", stype)
+        browsers = _start_browsers(zc, collector)
 
-        # Wait for responses
         import time
 
         time.sleep(timeout)
 
-        # Process collected services
-        for stype, name in collector.found:
-            try:
-                info = zc.get_service_info(stype, name, timeout=int(timeout * 1000))
-                if info is None:
-                    continue
+        devices = _process_collected_services(zc, collector, seen_keys, timeout)
 
-                # Extract IP addresses
-                addresses = info.parsed_addresses()
-                if not addresses:
-                    continue
-
-                ip = addresses[0]
-                hostname = info.server or ""
-
-                # Try to resolve MAC from ARP cache for this IP
-                mac = _arp_lookup_mac(ip)
-
-                # Parse TXT records
-                txt: dict[str, str] = {}
-                if info.properties:
-                    for key_bytes, val_bytes in info.properties.items():
-                        try:
-                            k = (
-                                key_bytes.decode("utf-8", errors="replace")
-                                if isinstance(key_bytes, bytes)
-                                else str(key_bytes)
-                            )
-                            v = (
-                                val_bytes.decode("utf-8", errors="replace")
-                                if isinstance(val_bytes, bytes)
-                                else str(val_bytes)
-                                if val_bytes
-                                else ""
-                            )
-                            txt[k] = v
-                        except Exception:
-                            pass
-
-                # Dedup by IP+service
-                key = f"{ip}:{stype}"
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-
-                vendor = lookup_vendor(mac) if mac else None
-                is_rand = is_randomized_mac(mac) if mac else False
-
-                device = MdnsDevice(
-                    hostname=hostname.rstrip("."),
-                    ip_address=ip,
-                    mac_address=mac,
-                    service_type=stype.replace("._tcp.local.", "").lstrip("_"),
-                    service_name=name,
-                    port=info.port or 0,
-                    vendor=vendor,
-                    is_randomized=is_rand,
-                    txt_records=txt,
-                )
-                devices.append(device)
-
-            except Exception:
-                logger.debug("Failed to resolve mDNS service: %s", name)
-
-        # Cancel browsers
         for browser in browsers:
             browser.cancel()
-
     finally:
         zc.close()
 
     logger.info("mDNS discovery complete: found %d services.", len(devices))
     return devices
+
+
+def _start_browsers(zc: Any, collector: "_ServiceCollector") -> list[Any]:
+    """Start ServiceBrowser instances for all known service types.
+
+    Args:
+        zc: Zeroconf instance.
+        collector: Service collector listener.
+
+    Returns:
+        List of active ServiceBrowser instances.
+    """
+    from zeroconf import ServiceBrowser
+
+    browsers: list[Any] = []
+    for stype in _SERVICE_TYPES:
+        try:
+            browser = ServiceBrowser(zc, stype, collector)  # type: ignore[arg-type]
+            browsers.append(browser)
+        except Exception:
+            logger.debug("Failed to browse service type: %s", stype)
+    return browsers
+
+
+def _process_collected_services(
+    zc: Any,
+    collector: "_ServiceCollector",
+    seen_keys: set[str],
+    timeout: float,
+) -> list[MdnsDevice]:
+    """Process services collected by the listener into MdnsDevice objects.
+
+    Args:
+        zc: Zeroconf instance.
+        collector: Service collector with found services.
+        seen_keys: Set for deduplication by IP+service.
+        timeout: Timeout for service info resolution.
+
+    Returns:
+        List of discovered MdnsDevice objects.
+    """
+    devices: list[MdnsDevice] = []
+
+    for stype, name in collector.found:
+        device = _resolve_service(zc, stype, name, seen_keys, timeout)
+        if device:
+            devices.append(device)
+
+    return devices
+
+
+def _resolve_service(
+    zc: Any,
+    stype: str,
+    name: str,
+    seen_keys: set[str],
+    timeout: float,
+) -> MdnsDevice | None:
+    """Resolve a single mDNS service into an MdnsDevice.
+
+    Args:
+        zc: Zeroconf instance.
+        stype: Service type string.
+        name: Service name.
+        seen_keys: Set for deduplication.
+        timeout: Resolution timeout.
+
+    Returns:
+        MdnsDevice if resolved, None otherwise.
+    """
+    try:
+        info = zc.get_service_info(stype, name, timeout=int(timeout * 1000))
+        if info is None:
+            return None
+
+        addresses = info.parsed_addresses()
+        if not addresses:
+            return None
+
+        ip = addresses[0]
+        key = f"{ip}:{stype}"
+        if key in seen_keys:
+            return None
+        seen_keys.add(key)
+
+        mac = _arp_lookup_mac(ip)
+        txt = _parse_txt_records(info.properties)
+        vendor = lookup_vendor(mac) if mac else None
+        is_rand = is_randomized_mac(mac) if mac else False
+
+        return MdnsDevice(
+            hostname=(info.server or "").rstrip("."),
+            ip_address=ip,
+            mac_address=mac,
+            service_type=stype.replace("._tcp.local.", "").lstrip("_"),
+            service_name=name,
+            port=info.port or 0,
+            vendor=vendor,
+            is_randomized=is_rand,
+            txt_records=txt,
+        )
+    except Exception:
+        logger.debug("Failed to resolve mDNS service: %s", name)
+        return None
+
+
+def _parse_txt_records(properties: dict[bytes, bytes | None] | None) -> dict[str, str]:
+    """Parse mDNS TXT record properties into a string dictionary.
+
+    Args:
+        properties: Raw TXT record properties from zeroconf.
+
+    Returns:
+        Parsed key-value dictionary.
+    """
+    txt: dict[str, str] = {}
+    if not properties:
+        return txt
+
+    for key_bytes, val_bytes in properties.items():
+        try:
+            k = key_bytes.decode("utf-8", errors="replace") if isinstance(key_bytes, bytes) else str(key_bytes)
+            v = val_bytes.decode("utf-8", errors="replace") if isinstance(val_bytes, bytes) else str(val_bytes or "")
+            txt[k] = v
+        except Exception:
+            pass
+
+    return txt
 
 
 class _ServiceCollector:

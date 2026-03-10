@@ -204,31 +204,20 @@ def categorize_device(
         if prefix in _OUI_CATEGORY_MAP:
             return _OUI_CATEGORY_MAP[prefix]
 
-    # 2. Check hostname
-    if hostname:
-        cat = _match_rules(hostname, _HOSTNAME_CATEGORY_RULES)
-        if cat:
-            return cat
+    # 2. Check hostname / device_name / SSID against hostname rules
+    for text in (hostname, device_name, ssid):
+        if text:
+            cat = _match_rules(text, _HOSTNAME_CATEGORY_RULES)
+            if cat:
+                return cat
 
-    # 3. Check device name
-    if device_name:
-        cat = _match_rules(device_name, _HOSTNAME_CATEGORY_RULES)
-        if cat:
-            return cat
-
-    # 4. Check SSID
-    if ssid:
-        cat = _match_rules(ssid, _HOSTNAME_CATEGORY_RULES)
-        if cat:
-            return cat
-
-    # 5. Check vendor
+    # 3. Check vendor
     if vendor:
         cat = _match_rules(vendor, _VENDOR_CATEGORY_RULES)
         if cat:
             return cat
 
-    # 6. Device type fallback
+    # 4. Device type fallback
     if device_type == "wifi_ap":
         return CATEGORY_AP
     if device_type == "bluetooth":

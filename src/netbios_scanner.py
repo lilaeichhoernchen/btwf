@@ -120,8 +120,6 @@ def _parse_nbstat_response(ip_address: str, data: bytes) -> NetBiosInfo | None:
         return None
 
     try:
-        # Skip header (12 bytes) + query echo + answer header
-        # Find the number of names
         offset = 56  # Typical offset to the count byte
         if offset >= len(data):
             return None
@@ -129,35 +127,9 @@ def _parse_nbstat_response(ip_address: str, data: bytes) -> NetBiosInfo | None:
         name_count = data[offset]
         offset += 1
 
-        netbios_name = ""
-        domain = ""
+        netbios_name, domain, offset = _extract_names(data, name_count, offset)
 
-        for _ in range(name_count):
-            if offset + 18 > len(data):
-                break
-
-            # Each entry: 15-byte name + 1-byte suffix + 2-byte flags
-            raw_name = data[offset : offset + 15].decode("ascii", errors="replace").strip()
-            suffix = data[offset + 15]
-            flags = struct.unpack(">H", data[offset + 16 : offset + 18])[0]
-            offset += 18
-
-            # Suffix 0x00 = workstation/computer name (unique)
-            if suffix == 0x00 and not (flags & 0x8000) and not netbios_name:
-                netbios_name = raw_name
-
-            # Suffix 0x00 with group flag = domain/workgroup
-            if suffix == 0x00 and (flags & 0x8000) and not domain:
-                domain = raw_name
-
-        # MAC address is 6 bytes after all name entries
-        mac = ""
-        if offset + 6 <= len(data):
-            mac_bytes = data[offset : offset + 6]
-            mac = ":".join(f"{b:02X}" for b in mac_bytes)
-            # Ignore zero/broadcast MACs
-            if mac in ("00:00:00:00:00:00", "FF:FF:FF:FF:FF:FF"):
-                mac = ""
+        mac = _extract_mac(data, offset)
 
         if netbios_name:
             return NetBiosInfo(
@@ -171,3 +143,58 @@ def _parse_nbstat_response(ip_address: str, data: bytes) -> NetBiosInfo | None:
         logger.debug("Failed to parse NBSTAT response from %s", ip_address)
 
     return None
+
+
+def _extract_names(data: bytes, name_count: int, offset: int) -> tuple[str, str, int]:
+    """Extract NetBIOS and domain names from NBSTAT response entries.
+
+    Args:
+        data: Raw response bytes.
+        name_count: Number of name table entries.
+        offset: Starting byte offset.
+
+    Returns:
+        Tuple of (netbios_name, domain, new_offset).
+    """
+    netbios_name = ""
+    domain = ""
+
+    for _ in range(name_count):
+        if offset + 18 > len(data):
+            break
+
+        raw_name = data[offset : offset + 15].decode("ascii", errors="replace").strip()
+        suffix = data[offset + 15]
+        flags = struct.unpack(">H", data[offset + 16 : offset + 18])[0]
+        offset += 18
+
+        is_group = bool(flags & 0x8000)
+
+        if suffix == 0x00 and not is_group and not netbios_name:
+            netbios_name = raw_name
+        elif suffix == 0x00 and is_group and not domain:
+            domain = raw_name
+
+    return netbios_name, domain, offset
+
+
+def _extract_mac(data: bytes, offset: int) -> str:
+    """Extract MAC address from NBSTAT response after name entries.
+
+    Args:
+        data: Raw response bytes.
+        offset: Byte offset after name table entries.
+
+    Returns:
+        MAC address string, or empty string if invalid.
+    """
+    if offset + 6 > len(data):
+        return ""
+
+    mac_bytes = data[offset : offset + 6]
+    mac = ":".join(f"{b:02X}" for b in mac_bytes)
+
+    if mac in ("00:00:00:00:00:00", "FF:FF:FF:FF:FF:FF"):
+        return ""
+
+    return mac
