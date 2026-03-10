@@ -6,8 +6,9 @@ then stores results in the database and displays a human-readable table.
 
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 
+from sqlalchemy.orm import Session as DbSession
 from tabulate import tabulate
 
 from src.bluetooth_scanner import scan_bluetooth_devices
@@ -16,12 +17,11 @@ from src.device_tracker import (
     get_all_devices_with_latest_window,
     track_bluetooth_scan,
     track_wifi_scan,
-    upsert_wifi_device,
     update_visibility,
 )
 from src.models import Device
 from src.network_discovery import scan_arp_table
-from src.oui_lookup import is_randomized_mac, lookup_vendor, normalize_mac
+from src.oui_lookup import is_randomized_mac
 from src.wifi_scanner import scan_wifi_networks
 
 # Translate verbose vendor names into friendlier brand names
@@ -219,7 +219,7 @@ def run_scan() -> None:
         _display_results(session)
 
 
-def _display_results(session: "Session") -> None:  # noqa: F821
+def _display_results(session: DbSession) -> None:
     """Display all tracked devices in a human-readable table.
 
     Args:

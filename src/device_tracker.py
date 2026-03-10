@@ -6,8 +6,7 @@ the configured gap, a new window is created.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -62,7 +61,7 @@ def upsert_wifi_device(session: Session, network: WifiNetwork) -> Device:
     return device
 
 
-def upsert_bluetooth_device(session: Session, bt_device: BluetoothDevice) -> Optional[Device]:
+def upsert_bluetooth_device(session: Session, bt_device: BluetoothDevice) -> Device | None:
     """Insert or update a Bluetooth device record.
 
     Args:
@@ -103,7 +102,7 @@ def update_visibility(
     session: Session,
     mac_address: str,
     scan_time: datetime,
-    signal_dbm: Optional[float] = None,
+    signal_dbm: float | None = None,
     gap_seconds: int = DEFAULT_GAP_SECONDS,
 ) -> VisibilityWindow:
     """Update or create a visibility window for a device.
@@ -222,7 +221,7 @@ def track_bluetooth_scan(
 
 def get_all_devices_with_latest_window(
     session: Session,
-) -> list[tuple[Device, Optional[VisibilityWindow]]]:
+) -> list[tuple[Device, VisibilityWindow | None]]:
     """Get all devices with their most recent visibility window.
 
     Args:
@@ -232,7 +231,7 @@ def get_all_devices_with_latest_window(
         List of (Device, VisibilityWindow or None) tuples.
     """
     devices = session.query(Device).order_by(Device.device_type, Device.mac_address).all()
-    results: list[tuple[Device, Optional[VisibilityWindow]]] = []
+    results: list[tuple[Device, VisibilityWindow | None]] = []
 
     for device in devices:
         window = (

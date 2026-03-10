@@ -2,10 +2,10 @@
 
 import logging
 import os
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.models import Base
@@ -20,7 +20,7 @@ def get_database_url() -> str:
     return os.environ.get("DATABASE_URL", _DEFAULT_DB_URL)
 
 
-def create_db_engine(database_url: str | None = None) -> "Engine":  # noqa: F821
+def create_db_engine(database_url: str | None = None) -> Engine:
     """Create a SQLAlchemy engine.
 
     Args:
@@ -35,7 +35,7 @@ def create_db_engine(database_url: str | None = None) -> "Engine":  # noqa: F821
     return engine
 
 
-def init_database(database_url: str | None = None) -> "Engine":  # noqa: F821
+def init_database(database_url: str | None = None) -> Engine:
     """Initialize the database, creating tables if needed.
 
     Args:
@@ -50,7 +50,7 @@ def init_database(database_url: str | None = None) -> "Engine":  # noqa: F821
     return engine
 
 
-def get_session_factory(engine: "Engine") -> sessionmaker:  # noqa: F821
+def get_session_factory(engine: Engine) -> sessionmaker:
     """Create a session factory bound to the given engine.
 
     Args:
@@ -63,7 +63,7 @@ def get_session_factory(engine: "Engine") -> sessionmaker:  # noqa: F821
 
 
 @contextmanager
-def get_session(engine: "Engine") -> Generator[Session, None, None]:  # noqa: F821
+def get_session(engine: Engine) -> Generator[Session, None, None]:
     """Context manager for database sessions with automatic commit/rollback.
 
     Args:

@@ -2,7 +2,6 @@
 
 import logging
 import re
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,6 @@ _BUILTIN_OUI: dict[str, str] = {
     "00:16:CB": "Apple",
     "00:17:F2": "Apple",
     "00:19:E3": "Apple",
-    "00:1B:63": "Apple",
     "00:1C:B3": "Apple",
     "00:1D:4F": "Apple",
     "00:1E:52": "Apple",
@@ -543,7 +541,6 @@ _BUILTIN_OUI: dict[str, str] = {
     "00:1E:4C": "Sony",
     "00:1E:A4": "Sony",
     # Microsoft / Xbox
-    "00:50:F2": "Microsoft",
     "28:18:78": "Microsoft",
     "58:82:A8": "Microsoft",
     "60:45:BD": "Microsoft",
@@ -608,7 +605,6 @@ _BUILTIN_OUI: dict[str, str] = {
     "8C:DE:F9": "Xiaomi",
     "98:FA:E3": "Xiaomi",
     "9C:99:A0": "Xiaomi",
-    "A4:77:33": "Xiaomi",
     "AC:C1:EE": "Xiaomi",
     "B0:E2:35": "Xiaomi",
     "C4:0B:CB": "Xiaomi",
@@ -653,7 +649,7 @@ def get_oui_prefix(mac_address: str) -> str:
     return normalized[:8]
 
 
-def lookup_vendor(mac_address: str) -> Optional[str]:
+def lookup_vendor(mac_address: str) -> str | None:
     """Look up the vendor/manufacturer for a MAC address.
 
     Tries the mac-vendor-lookup library first, then falls back to
@@ -675,7 +671,7 @@ def lookup_vendor(mac_address: str) -> Optional[str]:
     _init_mac_lookup()
     if _mac_lookup is not None:
         try:
-            vendor = _mac_lookup.lookup(normalized)
+            vendor: str | None = _mac_lookup.lookup(normalized)
             if vendor:
                 return vendor
         except Exception:

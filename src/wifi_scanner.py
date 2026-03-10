@@ -13,7 +13,6 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 from src.oui_lookup import is_randomized_mac, lookup_vendor, normalize_mac
 
@@ -30,12 +29,12 @@ class WifiNetwork:
     authentication: str
     encryption: str
     signal_percent: int
-    signal_dbm: Optional[float]
+    signal_dbm: float | None
     radio_type: str
     channel: int
-    vendor: Optional[str] = None
+    vendor: str | None = None
     is_randomized: bool = False
-    device_name: Optional[str] = None
+    device_name: str | None = None
     scan_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
@@ -82,10 +81,10 @@ def scan_wifi_networks() -> list[WifiNetwork]:
         )
     except FileNotFoundError:
         logger.error("netsh command not found. WiFi scanning requires Windows.")
-        raise RuntimeError("WiFi scanning requires Windows (netsh not found).")
+        raise RuntimeError("WiFi scanning requires Windows (netsh not found).") from None
     except subprocess.TimeoutExpired:
         logger.error("WiFi scan timed out after 30 seconds.")
-        raise RuntimeError("WiFi scan timed out.")
+        raise RuntimeError("WiFi scan timed out.") from None
 
     if result.returncode != 0:
         error_msg = result.stderr.strip() if result.stderr else "Unknown error"

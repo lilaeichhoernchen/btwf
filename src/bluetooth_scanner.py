@@ -13,7 +13,6 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 from src.oui_lookup import is_randomized_mac, lookup_vendor, normalize_mac
 
@@ -25,11 +24,11 @@ class BluetoothDevice:
     """A discovered Bluetooth device."""
 
     mac_address: str
-    device_name: Optional[str] = None
+    device_name: str | None = None
     is_connected: bool = False
     is_paired: bool = False
-    device_class: Optional[str] = None
-    vendor: Optional[str] = None
+    device_class: str | None = None
+    vendor: str | None = None
     is_randomized: bool = False
     scan_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -124,10 +123,10 @@ def scan_bluetooth_devices() -> list[BluetoothDevice]:
         )
     except FileNotFoundError:
         logger.error("PowerShell not found. Bluetooth scanning requires Windows.")
-        raise RuntimeError("Bluetooth scanning requires Windows PowerShell.")
+        raise RuntimeError("Bluetooth scanning requires Windows PowerShell.") from None
     except subprocess.TimeoutExpired:
         logger.error("Bluetooth scan timed out after 30 seconds.")
-        raise RuntimeError("Bluetooth scan timed out.")
+        raise RuntimeError("Bluetooth scan timed out.") from None
 
     if result.returncode != 0:
         stderr = result.stderr.strip() if result.stderr else ""

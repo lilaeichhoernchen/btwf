@@ -13,7 +13,6 @@ import socket
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 from src.oui_lookup import is_randomized_mac, lookup_vendor, normalize_mac
 
@@ -26,9 +25,9 @@ class NetworkDevice:
 
     ip_address: str
     mac_address: str
-    interface: Optional[str] = None
-    hostname: Optional[str] = None
-    vendor: Optional[str] = None
+    interface: str | None = None
+    hostname: str | None = None
+    vendor: str | None = None
     is_randomized: bool = False
     arp_type: str = "dynamic"  # "dynamic" or "static"
     scan_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -144,7 +143,7 @@ def _parse_arp_output(output: str) -> list[NetworkDevice]:
     return devices
 
 
-def _resolve_hostname(ip_address: str) -> Optional[str]:
+def _resolve_hostname(ip_address: str) -> str | None:
     """Attempt to resolve an IP address to a hostname.
 
     Tries reverse DNS lookup. On failure, returns None.

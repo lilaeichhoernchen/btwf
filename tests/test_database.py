@@ -20,7 +20,6 @@ class TestDatabaseInit:
 
     def test_init_creates_tables(self) -> None:
         engine = init_database("sqlite:///:memory:")
-        inspector = engine.dialect.get_columns
         # Verify tables exist by querying them
         with get_session(engine) as session:
             # Should not raise
@@ -77,11 +76,10 @@ class TestDeviceModel:
             session.add(d1)
             session.flush()
 
-        with pytest.raises(IntegrityError):
-            with get_session(in_memory_engine) as session:
-                d2 = Device(mac_address="AA:BB:CC:DD:EE:FF", device_type="bluetooth")
-                session.add(d2)
-                session.flush()
+        with pytest.raises(IntegrityError), get_session(in_memory_engine) as session:
+            d2 = Device(mac_address="AA:BB:CC:DD:EE:FF", device_type="bluetooth")
+            session.add(d2)
+            session.flush()
 
     def test_device_repr(self, in_memory_engine) -> None:
         device = Device(mac_address="AA:BB:CC:DD:EE:FF", device_type="wifi_ap", ssid="Home")
